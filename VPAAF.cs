@@ -11,49 +11,80 @@ using System.IO;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 
-
 namespace VpaAF
 {
-    public class Function1
+    public class ConnectionDetails
     {
-        private readonly ILogger<Function1> _logger;
 
-        public Function1(ILogger<Function1> logger)
+        public string WorkspaceConnection { get; set; }
+        public string AppId { get; set; }
+        public string TenantId { get; set; }
+        public string AppSecret { get; set; }
+        public string Catalog { get; set; }
+    }
+
+    public class VPA
+    {
+        private readonly ILogger<VPA> _logger;
+
+        public VPA(ILogger<VPA> logger)
         {
             _logger = logger;
         }
 
-        [Function("Function1")]
+        [Function("VPA")]
         public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequest req)
         {
-            string connectionString = "Provider=MSOLAP;Data Source=powerbi://api.powerbi.com/v1.0/myorg/DCDD%20Advogados%20Dashboard;User ID=app:c3da7a91-d044-4525-bdb4-2eb7c6af5aba@7a9e4f31-3a03-45c5-8f56-60c4e749c2ef;Password=tBm8Q~rFDsY1R2l6SlaJLoLOShRja4C3xFGqVbRt;Initial Catalog=DCDD Dashboard v2";
+            string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
+            ConnectionDetails connDetails;
+
+            try
+            {
+                connDetails = JsonConvert.DeserializeObject<ConnectionDetails>(requestBody);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Erro ao desserializar os detalhes da conexÃ£o: {ex.Message}");
+                return new ContentResult
+                {
+                    Content = "Invalid request body. Please send connection details in JSON format.",
+                    ContentType = "text/plain",
+                    StatusCode = StatusCodes.Status400BadRequest
+                };
+            }
+
+            // ReconstrÃ³i a connectionString a partir dos dados recebidos
+            string connectionString = $"Provider=MSOLAP;" +
+                          $"Data Source={connDetails.WorkspaceConnection};" +
+                          $"User ID=app:{connDetails.AppId + "@" + connDetails.TenantId};" +
+                          $"Password={connDetails.AppSecret};" +
+                          $"Initial Catalog={connDetails.Catalog}";
+
             string extractorAppName = "Azure Function C#";
             string extractorAppVersion = "1.0.0";
             bool excludeVpa = false;
             bool excludeTom = false;
-            int columnBatchSize = 100; // Ajuste conforme necessário
-            DirectQueryExtractionMode directQueryMode = DirectQueryExtractionMode.None;
-            
-
-            
+            int columnBatchSize = 1000; // Ajuste conforme necessÃ¡rio
 
             try
             {
-                _logger.LogInformation("Iniciando a extração do modelo DAX...");
+                _logger.LogInformation("Iniciando a extraÃ§Ã£o do modelo DAX...");
 
-                // Obtém o DaxModel
-                var daxModel = TomExtractor.GetDaxModel(
+                // ObtÃ©m o DaxModel
+                var daxModel = await Task.Run(() => TomExtractor.GetDaxModel(
                     connectionString: connectionString,
                     applicationName: extractorAppName,
                     applicationVersion: extractorAppVersion,
                     readStatisticsFromData: true,
-                    sampleRows: 0,
+                    sampleRows: 10,
                     statsColumnBatchSize: columnBatchSize
-                );
+                ));
+
+
 
                 if (daxModel == null)
                 {
-                    _logger.LogError("O modelo DAX não pôde ser obtido. Verifique a string de conexão e as configurações.");
+                    _logger.LogError("O modelo DAX nÃ£o pÃ´de ser obtido. Verifique a string de conexÃ£o e as configuraÃ§Ãµes.");
                     return new ContentResult
                     {
                         Content = "DAX model could not be retrieved.",
@@ -64,8 +95,8 @@ namespace VpaAF
 
                 _logger.LogInformation("Modelo DAX obtido com sucesso.");
 
-                // Cria o modelo VPA se não estiver excluído
-                Dax.ViewVpaExport.Model vpaModel = null;
+                // Cria o modelo VPA se nÃ£o estiver excluÃ­do
+                Dax.ViewVpaExport.Model? vpaModel = null;
                 if (!excludeVpa)
                 {
                     try
@@ -85,7 +116,7 @@ namespace VpaAF
                     }
                 }
 
-                // Obtém o banco de dados TOM se não estiver excluído
+                // ObtÃ©m o banco de dados TOM se nÃ£o estiver excluÃ­do
                 var tomDatabase = excludeTom ? null : TomExtractor.GetDatabase(connectionString);
 
                 // Exporta o VPAX
@@ -94,10 +125,12 @@ namespace VpaAF
                     try
                     {
                         VpaxTools.ExportVpax(vpaxStream, daxModel, vpaModel, tomDatabase);
-                        _logger.LogInformation("Exportação VPAX concluída com sucesso.");
+                        _logger.LogInformation("ExportaÃ§Ã£o VPAX concluÃ­da com sucesso.");
 
-                        // Serializa o resultado para JSON com configurações para ignorar referências circulares
-                        var jsonResult = JsonConvert.SerializeObject(daxModel, new JsonSerializerSettings
+
+
+                        // Serializa o resultado para JSON com configuraÃ§Ãµes para ignorar referÃªncias circulares
+                        var jsonResult = JsonConvert.SerializeObject(vpaModel, new JsonSerializerSettings
                         {
                             Formatting = Formatting.Indented,
                             ReferenceLoopHandling = ReferenceLoopHandling.Ignore
